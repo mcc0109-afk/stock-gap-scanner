@@ -5,34 +5,58 @@ import requests
 from datetime import datetime, timedelta
 import urllib.parse
 
+# ==========================================
+# 🔑 密碼設定區 (您可以在這裡隨時修改密碼)
+# ==========================================
+# 請將引號內的文字改成您想要的密碼 (目前預設為 1688)
+APP_PASSWORD = "1688" 
+
 # -------------------------
-# 新增功能：將「中文股票名稱」自動轉換為「股票代號」(全面升級 API 版)
+# 新增功能：密碼驗證系統
+# -------------------------
+def check_password():
+    # 如果系統已經記住使用者輸入過正確密碼，就直接放行
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # 否則，顯示登入畫面
+    st.title("🔒 系統已鎖定")
+    st.info("請輸入專屬密碼以啟用「股票缺口自動篩選系統」。")
+    
+    # 密碼輸入框 (type="password" 會把輸入的字變成星星或黑點)
+    password = st.text_input("請輸入密碼：", type="password")
+    
+    if password:
+        if password == APP_PASSWORD:
+            st.session_state["password_correct"] = True
+            st.rerun() # 密碼正確，重新載入網頁進入主畫面
+        else:
+            st.error("❌ 密碼錯誤，請重新輸入。")
+            
+    return False
+
+# -------------------------
+# 將「中文股票名稱」自動轉換為「股票代號」
 # -------------------------
 def resolve_ticker(user_input):
     user_input = str(user_input).strip()
-    
-    # 情況 1：如果是數字，直接回傳
     if user_input.isdigit():
         return user_input
         
-    # 情況 2：使用 Yahoo 台灣的「內部搜尋 API」直接獲取精準代號
     try:
         encoded_input = urllib.parse.quote(user_input)
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={encoded_input}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
         response = requests.get(url, headers=headers, timeout=5)
-        data = response.json() # 直接讀取乾淨的 JSON 資料
+        data = response.json() 
         
         if 'ResultSet' in data and 'Result' in data['ResultSet']:
             for item in data['ResultSet']['Result']:
                 symbol = item.get('symbol', '')
-                # 確保抓到的是台股 (上市 .TW 或 上櫃 .TWO)
                 if symbol.endswith('.TW') or symbol.endswith('.TWO'):
                     return symbol.split('.')[0]
     except:
         pass
-        
     return user_input
 
 # -------------------------
@@ -43,7 +67,6 @@ def get_chinese_stock_name(ticker_symbol):
     try:
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={clean_ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
         
@@ -57,12 +80,11 @@ def get_chinese_stock_name(ticker_symbol):
     return '未知名稱'
 
 # -------------------------
-# 1. 核心運算邏輯 
+# 核心運算邏輯 
 # -------------------------
 @st.cache_data(show_spinner=False)
 def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     stock_name = get_chinese_stock_name(ticker_symbol)
-
     start_str = start_date.strftime('%Y-%m-%d')
     end_date_plus_1 = end_date + timedelta(days=1)
     end_str = end_date_plus_1.strftime('%Y-%m-%d')
@@ -138,10 +160,17 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     return result_df, len(stock_data), len(target_gaps), stock_name
 
 # -------------------------
-# 2. 網頁視覺介面 (Streamlit)
+# 網頁視覺介面 (Streamlit)
 # -------------------------
 st.set_page_config(page_title="股票缺口查詢系統", layout="wide")
 
+# 【重點更新】在載入任何畫面之前，先啟動密碼檢查！
+if not check_password():
+    st.stop() # 如果密碼還沒輸入或錯誤，程式就會停在這裡，不會洩漏下面的系統
+
+# ==========================================
+# 只要過了密碼那一關，就會顯示下面的主畫面
+# ==========================================
 st.title("📈 股票缺口自動篩選系統")
 st.markdown("---")
 
@@ -167,17 +196,12 @@ with btn_col1:
 
 st.markdown("---")
 
-# -------------------------
-# 3. 按下查詢後的動作
-# -------------------------
 if search_clicked:
     if not ticker_input:
         st.warning("⚠️ 請輸入股票代號或名稱！")
     else:
         with st.spinner(f"正在搜尋並分析 {gap_type} 資料，請稍候..."):
-            
             actual_ticker = resolve_ticker(ticker_input)
-            
             ticker_try = f"{actual_ticker}.TW" 
             result_df, total_days, raw_gaps, stock_name = find_all_gaps(ticker_try, start_date, end_date, gap_type)
             
@@ -205,12 +229,7 @@ if search_clicked:
                     st.warning(f"⚠️ 條件篩選結果：這段期間內沒有符合「{status_type}」狀態的 {gap_type}。")
                 else:
                     st.success(f"✅ 查詢成功！符合「{status_type}」條件的缺口共有 {len(display_df)} 筆。")
-                    
-                    st.dataframe(
-                        display_df, 
-                        use_container_width=True, 
-                        hide_index=True 
-                    )
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                     
                     csv = display_df.to_csv(index=False).encode('utf-8-sig')
                     st.download_button(
