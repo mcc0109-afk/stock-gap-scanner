@@ -4,9 +4,49 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import urllib.parse
+import re
 
 # -------------------------
-# 新增功能：從 Yahoo 奇摩股市抓取中文名稱 (修正抓取邏輯)
+# 新增功能：將「中文股票名稱」自動轉換為「股票代號」
+# -------------------------
+def resolve_ticker(user_input):
+    user_input = str(user_input).strip()
+    
+    # 情況 1：如果全都是數字，代表使用者輸入的是代號，直接回傳
+    if user_input.isdigit():
+        return user_input
+        
+    # 情況 2：如果輸入的是中文或英文，呼叫 Yahoo 搜尋 API 找代號
+    try:
+        # 將中文進行 URL 安全編碼
+        encoded_input = urllib.parse.quote(user_input)
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_input}&quotesCount=5&newsCount=0"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        data = response.json()
+        
+        if 'quotes' in data and len(data['quotes']) > 0:
+            # 優先尋找帶有 .TW (上市) 或 .TWO (上櫃) 的台灣股票
+            for quote in data['quotes']:
+                symbol = quote.get('symbol', '')
+                if symbol.endswith('.TW') or symbol.endswith('.TWO'):
+                    return symbol.split('.')[0]
+                    
+            # 如果都沒找到台股綴字，提取第一個搜尋結果中的「數字部分」
+            first_symbol = data['quotes'][0].get('symbol', '')
+            match = re.search(r'\d+', first_symbol)
+            if match:
+                return match.group()
+    except:
+        pass
+        
+    # 如果轉換失敗，原封不動回傳，讓後續的錯誤處理去擋下
+    return user_input
+
+# -------------------------
+# 輔助功能：從 Yahoo 奇摩股市抓取中文名稱
 # -------------------------
 def get_chinese_stock_name(ticker_symbol):
     try:
@@ -17,13 +57,10 @@ def get_chinese_stock_name(ticker_symbol):
         response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 【修正 Bug】改抓 <title> 標籤，避開 Yahoo Logo
         title_tag = soup.find('title')
         if title_tag:
             title_text = title_tag.text
-            # 標題格式通常為 "旺矽(6223) - 股價走勢 - Yahoo!奇摩股市"
             if '(' in title_text:
-                # 用左括號切割，取前半段並清除空白
                 return title_text.split('(')[0].strip()
         return '未知名稱'
     except:
@@ -40,7 +77,13 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     end_date_plus_1 = end_date + timedelta(days=1)
     end_str = end_date_plus_1.strftime('%Y-%m-%d')
     
-    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False)
+    # 建立專屬 Session 繞過雲端防機器人阻擋
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    
+    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, session=session)
     
     if stock_data.empty:
         return pd.DataFrame(), 0, 0, stock_name
@@ -119,7 +162,8 @@ min_allowed_date = datetime(1980, 1, 1)
 max_allowed_date = datetime.today()
 
 with col1:
-    ticker_input = st.text_input("股票代號", value="6223")
+    # 【更新 UI】提示使用者可以輸入名稱
+    ticker_input = st.text_input("股票代號或名稱", value="聯電", help="可輸入如: 2303, 聯電, 台積電...")
 with col2:
     start_date = st.date_input("起始日期", value=datetime(1998, 3, 9), min_value=min_allowed_date, max_value=max_allowed_date)
 with col3:
@@ -140,22 +184,27 @@ st.markdown("---")
 # -------------------------
 if search_clicked:
     if not ticker_input:
-        st.warning("⚠️ 請輸入股票代號！")
+        st.warning("⚠️ 請輸入股票代號或名稱！")
     else:
-        with st.spinner(f"正在分析 {gap_type} 資料，請稍候..."):
-            ticker_try = f"{ticker_input}.TW" 
+        with st.spinner(f"正在搜尋並分析 {gap_type} 資料，請稍候..."):
+            
+            # 【重點更新】先將使用者的輸入 (例如: 聯電) 轉換成純數字代號 (例如: 2303)
+            actual_ticker = resolve_ticker(ticker_input)
+            
+            ticker_try = f"{actual_ticker}.TW" 
             result_df, total_days, raw_gaps, stock_name = find_all_gaps(ticker_try, start_date, end_date, gap_type)
             
             if total_days == 0:
-                ticker_try = f"{ticker_input}.TWO"
+                ticker_try = f"{actual_ticker}.TWO"
                 result_df, total_days, raw_gaps, stock_name = find_all_gaps(ticker_try, start_date, end_date, gap_type)
                 if total_days > 0:
                     st.toast(f"已自動切換至上櫃股票", icon="🔄")
             
-            st.info(f"💡 系統資訊：正在查詢 **{stock_name} ({ticker_input})**。共抓取到 {total_days} 天的歷史股價，這段期間共產生過 {raw_gaps} 個 {gap_type}。")
+            # 顯示時使用轉換後的 actual_ticker
+            st.info(f"💡 系統資訊：正在查詢 **{stock_name} ({actual_ticker})**。共抓取到 {total_days} 天的歷史股價，這段期間共產生過 {raw_gaps} 個 {gap_type}。")
             
             if total_days == 0:
-                st.error("❌ 抓取失敗：上市與上櫃皆無法獲取資料，請確認股票代號。")
+                st.error(f"❌ 抓取失敗：無法解析「{ticker_input}」或查無歷史資料，請確認輸入是否正確。")
             elif result_df.empty:
                 st.warning(f"⚠️ 查無任何 {gap_type} 資料。")
             else:
@@ -177,11 +226,10 @@ if search_clicked:
                         hide_index=True 
                     )
                     
-                    # 【新增】匯出 CSV 功能 (使用 utf-8-sig 讓 Excel 開啟時不會亂碼)
                     csv = display_df.to_csv(index=False).encode('utf-8-sig')
                     st.download_button(
                         label="📥 下載報表 (CSV 檔案)",
                         data=csv,
-                        file_name=f"{ticker_input}_{stock_name}_{gap_type}報表.csv",
+                        file_name=f"{actual_ticker}_{stock_name}_{gap_type}報表.csv",
                         mime="text/csv",
                     )
