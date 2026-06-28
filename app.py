@@ -2,62 +2,59 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import urllib.parse
-import re
 
 # -------------------------
-# 新增功能：將「中文股票名稱」自動轉換為「股票代號」(升級為台灣 Yahoo 搜尋)
+# 新增功能：將「中文股票名稱」自動轉換為「股票代號」(全面升級 API 版)
 # -------------------------
 def resolve_ticker(user_input):
     user_input = str(user_input).strip()
     
-    # 情況 1：如果全是數字，代表是代號，直接回傳
+    # 情況 1：如果是數字，直接回傳
     if user_input.isdigit():
         return user_input
         
-    # 情況 2：輸入中文時，使用「台灣 Yahoo 奇摩股市」搜尋引擎來找代號
+    # 情況 2：使用 Yahoo 台灣的「內部搜尋 API」直接獲取精準代號
     try:
         encoded_input = urllib.parse.quote(user_input)
-        url = f"https://tw.stock.yahoo.com/search?p={encoded_input}"
+        url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={encoded_input}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
         response = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        data = response.json() # 直接讀取乾淨的 JSON 資料
         
-        # 尋找搜尋結果中的股票網址 (通常長這樣: /quote/3715.TW)
-        for a in soup.find_all('a', href=True):
-            if '/quote/' in a['href']:
-                match = re.search(r'/quote/(\d+)', a['href'])
-                if match:
-                    return match.group(1) # 精準抽出數字代號
+        if 'ResultSet' in data and 'Result' in data['ResultSet']:
+            for item in data['ResultSet']['Result']:
+                symbol = item.get('symbol', '')
+                # 確保抓到的是台股 (上市 .TW 或 上櫃 .TWO)
+                if symbol.endswith('.TW') or symbol.endswith('.TWO'):
+                    return symbol.split('.')[0]
     except:
         pass
         
-    # 如果轉換失敗，原封不動回傳
     return user_input
 
 # -------------------------
-# 輔助功能：從 Yahoo 奇摩股市抓取中文名稱
+# 輔助功能：從 API 抓取乾淨的中文名稱
 # -------------------------
 def get_chinese_stock_name(ticker_symbol):
+    clean_ticker = ticker_symbol.split('.')[0]
     try:
-        clean_ticker = ticker_symbol.split('.')[0]
-        url = f"https://tw.stock.yahoo.com/quote/{clean_ticker}"
+        url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={clean_ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
         response = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        data = response.json()
         
-        title_tag = soup.find('title')
-        if title_tag:
-            title_text = title_tag.text
-            if '(' in title_text:
-                return title_text.split('(')[0].strip()
-        return '未知名稱'
+        if 'ResultSet' in data and 'Result' in data['ResultSet']:
+            for item in data['ResultSet']['Result']:
+                symbol = item.get('symbol', '')
+                if symbol.startswith(clean_ticker):
+                    return item.get('name', '未知名稱')
     except:
-        return '未知名稱'
+        pass
+    return '未知名稱'
 
 # -------------------------
 # 1. 核心運算邏輯 
