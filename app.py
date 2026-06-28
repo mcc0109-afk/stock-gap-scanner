@@ -8,41 +8,34 @@ import urllib.parse
 import re
 
 # -------------------------
-# 新增功能：將「中文股票名稱」自動轉換為「股票代號」
+# 新增功能：將「中文股票名稱」自動轉換為「股票代號」(升級為台灣 Yahoo 搜尋)
 # -------------------------
 def resolve_ticker(user_input):
     user_input = str(user_input).strip()
     
-    # 情況 1：如果全都是數字，代表使用者輸入的是代號，直接回傳
+    # 情況 1：如果全是數字，代表是代號，直接回傳
     if user_input.isdigit():
         return user_input
         
-    # 情況 2：如果輸入的是中文或英文，呼叫 Yahoo 搜尋 API 找代號
+    # 情況 2：輸入中文時，使用「台灣 Yahoo 奇摩股市」搜尋引擎來找代號
     try:
-        # 將中文進行 URL 安全編碼
         encoded_input = urllib.parse.quote(user_input)
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_input}&quotesCount=5&newsCount=0"
+        url = f"https://tw.stock.yahoo.com/search?p={encoded_input}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
         response = requests.get(url, headers=headers, timeout=5)
-        data = response.json()
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        if 'quotes' in data and len(data['quotes']) > 0:
-            # 優先尋找帶有 .TW (上市) 或 .TWO (上櫃) 的台灣股票
-            for quote in data['quotes']:
-                symbol = quote.get('symbol', '')
-                if symbol.endswith('.TW') or symbol.endswith('.TWO'):
-                    return symbol.split('.')[0]
-                    
-            # 如果都沒找到台股綴字，提取第一個搜尋結果中的「數字部分」
-            first_symbol = data['quotes'][0].get('symbol', '')
-            match = re.search(r'\d+', first_symbol)
-            if match:
-                return match.group()
+        # 尋找搜尋結果中的股票網址 (通常長這樣: /quote/3715.TW)
+        for a in soup.find_all('a', href=True):
+            if '/quote/' in a['href']:
+                match = re.search(r'/quote/(\d+)', a['href'])
+                if match:
+                    return match.group(1) # 精準抽出數字代號
     except:
         pass
         
-    # 如果轉換失敗，原封不動回傳，讓後續的錯誤處理去擋下
+    # 如果轉換失敗，原封不動回傳
     return user_input
 
 # -------------------------
@@ -77,7 +70,6 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     end_date_plus_1 = end_date + timedelta(days=1)
     end_str = end_date_plus_1.strftime('%Y-%m-%d')
     
-    # 建立專屬 Session 繞過雲端防機器人阻擋
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -162,8 +154,7 @@ min_allowed_date = datetime(1980, 1, 1)
 max_allowed_date = datetime.today()
 
 with col1:
-    # 【更新 UI】提示使用者可以輸入名稱
-    ticker_input = st.text_input("股票代號或名稱", value="聯電", help="可輸入如: 2303, 聯電, 台積電...")
+    ticker_input = st.text_input("股票代號或名稱", value="定穎投控", help="可輸入如: 3715, 定穎投控, 台積電...")
 with col2:
     start_date = st.date_input("起始日期", value=datetime(1998, 3, 9), min_value=min_allowed_date, max_value=max_allowed_date)
 with col3:
@@ -188,7 +179,6 @@ if search_clicked:
     else:
         with st.spinner(f"正在搜尋並分析 {gap_type} 資料，請稍候..."):
             
-            # 【重點更新】先將使用者的輸入 (例如: 聯電) 轉換成純數字代號 (例如: 2303)
             actual_ticker = resolve_ticker(ticker_input)
             
             ticker_try = f"{actual_ticker}.TW" 
@@ -200,7 +190,6 @@ if search_clicked:
                 if total_days > 0:
                     st.toast(f"已自動切換至上櫃股票", icon="🔄")
             
-            # 顯示時使用轉換後的 actual_ticker
             st.info(f"💡 系統資訊：正在查詢 **{stock_name} ({actual_ticker})**。共抓取到 {total_days} 天的歷史股價，這段期間共產生過 {raw_gaps} 個 {gap_type}。")
             
             if total_days == 0:
