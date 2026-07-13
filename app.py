@@ -13,7 +13,7 @@ st.set_page_config(page_title="股票缺口查詢系統", layout="wide")
 # ==========================================
 # 🔑 密碼設定區
 # ==========================================
-APP_PASSWORD = "1688" 
+APP_PASSWORD = "1788" 
 
 def check_password():
     if st.session_state.get("password_correct", False):
