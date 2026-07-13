@@ -4,10 +4,36 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import urllib.parse
-import gc  # 🔥 導入 Python 核心垃圾回收模組
+import gc
+
+# ==========================================
+# 🔑 密碼設定區 (您可以在這裡隨時修改密碼)
+# ==========================================
+APP_PASSWORD = "1788" 
 
 # -------------------------
-# 智慧代號解析：加上 24 小時長快取 (86400 秒)
+# 密碼驗證系統
+# -------------------------
+def check_password():
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.title("🔒 系統已鎖定")
+    st.info("此為私人專屬的股票缺口運算伺服器，請輸入密碼以解鎖使用。")
+    
+    password = st.text_input("請輸入密碼：", type="password")
+    
+    if password:
+        if password == APP_PASSWORD:
+            st.session_state["password_correct"] = True
+            st.rerun() 
+        else:
+            st.error("❌ 密碼錯誤，請重新輸入。")
+            
+    return False
+
+# -------------------------
+# 智慧代號解析 (24小時快取)
 # -------------------------
 @st.cache_data(ttl=86400, show_spinner=False)
 def resolve_ticker(user_input):
@@ -32,7 +58,7 @@ def resolve_ticker(user_input):
     return user_input
 
 # -------------------------
-# 輔助功能：從 API 抓取乾淨的中文名稱：加上 24 小時長快取 (86400 秒)
+# 從 API 抓取乾淨的中文名稱 (24小時快取)
 # -------------------------
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_chinese_stock_name(ticker_symbol):
@@ -53,7 +79,7 @@ def get_chinese_stock_name(ticker_symbol):
     return '未知名稱'
 
 # -------------------------
-# 核心運算邏輯：加上 30 分鐘快取 (1800 秒)，並啟動記憶體極度優化
+# 核心運算邏輯 (30分鐘快取 + 極致記憶體優化)
 # -------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
 def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
@@ -67,7 +93,6 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
     
-    # 抓取龐大的歷史股價
     stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, session=session, progress=False)
     
     if stock_data.empty:
@@ -80,7 +105,7 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
         if col not in stock_data.columns:
             return pd.DataFrame(), len(stock_data), 0, stock_name, "", 0.0
             
-    # 🔥 【記憶體優化 1】將預設重型的 float64 精簡為 float32，記憶體直接砍半 (現省 50%)
+    # 【記憶體優化】降轉為 float32，節省 50% RAM
     for col in ['High', 'Low', 'Close', 'Volume']:
         stock_data[col] = stock_data[col].astype('float32')
     
@@ -134,14 +159,13 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     if not result_df.empty:
         result_df = result_df.sort_values(by='缺口產生日期', ascending=False).reset_index(drop=True)
     
-    # 紀錄即將回傳的常數資訊
     total_days = len(stock_data)
     raw_gaps = len(target_gaps)
     
-    # 🔥 【記憶體優化 2】運算完成後，立刻銷毀重型大變數，強迫釋放 RAM
+    # 【記憶體優化】刪除龐大原始資料，呼叫垃圾回收
     del stock_data
     del target_gaps
-    gc.collect() # 啟動垃圾回收機制
+    gc.collect()
         
     return result_df, total_days, raw_gaps, stock_name, last_date, last_close
 
@@ -150,6 +174,11 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
 # -------------------------
 st.set_page_config(page_title="股票缺口查詢系統", layout="wide")
 
+# 【重點防護】在載入主畫面與任何大量變數前，攔截未授權的使用者
+if not check_password():
+    st.stop()
+
+# ==================== 通過密碼後才會執行以下內容 ====================
 st.title("📈 股票缺口自動篩選系統")
 st.markdown("---")
 
@@ -179,7 +208,6 @@ info_placeholder = info_col.empty()
 
 st.markdown("---")
 
-# 利用 Session State 防止畫面刷新時快取被清空或錯亂
 if "current_df" not in st.session_state:
     st.session_state.current_df = None
 if "info_html" not in st.session_state:
@@ -191,8 +219,7 @@ if clear_clicked:
     st.session_state.current_df = None
     st.session_state.info_html = ""
     st.session_state.sys_info = ""
-    # 🔥 【記憶體優化 3】清除畫面時一併清空系統記憶體殘留
-    gc.collect()
+    gc.collect() # 清除畫面時一併清理記憶體
     st.rerun()
 
 if search_clicked:
@@ -226,17 +253,16 @@ if search_clicked:
                         filtered_df = result_df.copy()
                         
                     st.session_state.current_df = filtered_df
-                    del filtered_df # 釋放局部過濾後的變數
+                    del filtered_df
                 else:
                     st.session_state.current_df = pd.DataFrame()
                 
-                del result_df # 釋放核心回傳變數
+                del result_df
                 gc.collect()
             else:
                 st.error(f"❌ 抓取失敗：無法解析「{ticker_input}」或查無歷史資料，請確認輸入是否正確。")
                 st.session_state.current_df = None
 
-# 渲染畫面
 if st.session_state.info_html:
     info_placeholder.markdown(st.session_state.info_html, unsafe_allow_html=True)
 
