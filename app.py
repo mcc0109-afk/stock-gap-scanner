@@ -7,13 +7,13 @@ from datetime import datetime, timedelta
 import urllib.parse
 import gc
 
-# 【緊急修正：網頁設定必須是所有 Streamlit 指令的第一行】
+# 【重要：網頁排版設定必須是所有 Streamlit 指令的第一行，以防畫面空白】
 st.set_page_config(page_title="股票缺口查詢系統", layout="wide")
 
 # ==========================================
 # 🔑 密碼設定區 (您可以在這裡隨時修改密碼)
 # ==========================================
-APP_PASSWORD = "1788" 
+APP_PASSWORD = "1688" 
 
 # -------------------------
 # 密碼驗證系統
@@ -83,7 +83,7 @@ def get_chinese_stock_name(ticker_symbol):
     return '未知名稱'
 
 # -------------------------
-# 核心運算邏輯 (加入 max_entries=3，並使用純 Numpy 陣列運算)
+# 核心運算邏輯 (使用純 Numpy 陣列高速運算，控管快取記憶體)
 # -------------------------
 @st.cache_data(ttl=1800, max_entries=3, show_spinner=False)
 def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
@@ -182,10 +182,8 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     return result_df, total_days, raw_gaps, stock_name, last_date, last_close
 
 # -------------------------
-# 網頁視覺介面 (Streamlit)
+# 網頁視覺介面 (密碼攔截)
 # -------------------------
-
-# 【重點防護】密碼攔截
 if not check_password():
     st.stop()
 
@@ -293,3 +291,4 @@ if st.session_state.current_df is not None:
             data=csv,
             file_name=f"{actual_ticker}_{stock_name}_{gap_type}報表.csv",
             mime="text/csv",
+        )
