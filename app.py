@@ -4,10 +4,12 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import urllib.parse
+import gc  # 🔥 導入 Python 核心垃圾回收模組
 
 # -------------------------
-# 將「中文股票名稱」自動轉換為「股票代號」
+# 智慧代號解析：加上 24 小時長快取 (86400 秒)
 # -------------------------
+@st.cache_data(ttl=86400, show_spinner=False)
 def resolve_ticker(user_input):
     user_input = str(user_input).strip()
     if user_input.isdigit():
@@ -30,8 +32,9 @@ def resolve_ticker(user_input):
     return user_input
 
 # -------------------------
-# 輔助功能：從 API 抓取乾淨的中文名稱
+# 輔助功能：從 API 抓取乾淨的中文名稱：加上 24 小時長快取 (86400 秒)
 # -------------------------
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_chinese_stock_name(ticker_symbol):
     clean_ticker = ticker_symbol.split('.')[0]
     try:
@@ -50,9 +53,9 @@ def get_chinese_stock_name(ticker_symbol):
     return '未知名稱'
 
 # -------------------------
-# 核心運算邏輯 (包含收盤價)
+# 核心運算邏輯：加上 30 分鐘快取 (1800 秒)，並啟動記憶體極度優化
 # -------------------------
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     stock_name = get_chinese_stock_name(ticker_symbol)
     start_str = start_date.strftime('%Y-%m-%d')
@@ -64,7 +67,8 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
     
-    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, session=session)
+    # 抓取龐大的歷史股價
+    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, session=session, progress=False)
     
     if stock_data.empty:
         return pd.DataFrame(), 0, 0, stock_name, "", 0.0
@@ -76,10 +80,9 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
         if col not in stock_data.columns:
             return pd.DataFrame(), len(stock_data), 0, stock_name, "", 0.0
             
-    stock_data['High'] = stock_data['High'].astype(float)
-    stock_data['Low'] = stock_data['Low'].astype(float)
-    stock_data['Close'] = stock_data['Close'].astype(float)
-    stock_data['Volume'] = stock_data['Volume'].astype(float)
+    # 🔥 【記憶體優化 1】將預設重型的 float64 精簡為 float32，記憶體直接砍半 (現省 50%)
+    for col in ['High', 'Low', 'Close', 'Volume']:
+        stock_data[col] = stock_data[col].astype('float32')
     
     last_date = stock_data.index[-1].strftime('%Y/%m/%d')
     last_close = round(float(stock_data['Close'].iloc[-1]), 2)
@@ -130,8 +133,17 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     result_df = pd.DataFrame(all_gaps)
     if not result_df.empty:
         result_df = result_df.sort_values(by='缺口產生日期', ascending=False).reset_index(drop=True)
+    
+    # 紀錄即將回傳的常數資訊
+    total_days = len(stock_data)
+    raw_gaps = len(target_gaps)
+    
+    # 🔥 【記憶體優化 2】運算完成後，立刻銷毀重型大變數，強迫釋放 RAM
+    del stock_data
+    del target_gaps
+    gc.collect() # 啟動垃圾回收機制
         
-    return result_df, len(stock_data), len(target_gaps), stock_name, last_date, last_close
+    return result_df, total_days, raw_gaps, stock_name, last_date, last_close
 
 # -------------------------
 # 網頁視覺介面 (Streamlit)
@@ -147,7 +159,6 @@ min_allowed_date = datetime(1980, 1, 1)
 max_allowed_date = datetime.today()
 
 with col1:
-    # 【重點更新】把 value 設為空字串，並加上 placeholder 提示
     ticker_input = st.text_input("股票代號或名稱", value="", placeholder="請輸入代號或名稱...")
 with col2:
     start_date = st.date_input("起始日期", value=datetime(1998, 3, 9), min_value=min_allowed_date, max_value=max_allowed_date)
@@ -168,6 +179,22 @@ info_placeholder = info_col.empty()
 
 st.markdown("---")
 
+# 利用 Session State 防止畫面刷新時快取被清空或錯亂
+if "current_df" not in st.session_state:
+    st.session_state.current_df = None
+if "info_html" not in st.session_state:
+    st.session_state.info_html = ""
+if "sys_info" not in st.session_state:
+    st.session_state.sys_info = ""
+
+if clear_clicked:
+    st.session_state.current_df = None
+    st.session_state.info_html = ""
+    st.session_state.sys_info = ""
+    # 🔥 【記憶體優化 3】清除畫面時一併清空系統記憶體殘留
+    gc.collect()
+    st.rerun()
+
 if search_clicked:
     if not ticker_input:
         st.warning("⚠️ 請輸入股票代號或名稱！")
@@ -187,33 +214,46 @@ if search_clicked:
                     st.toast(f"已自動切換至上櫃股票", icon="🔄")
             
             if total_days > 0:
-                info_text = f"個股收盤資訊 **{actual_ticker} {stock_name}** 收盤 **{last_close}** {last_date} {market_type}"
-                info_placeholder.markdown(f"<div style='padding-top: 6px; font-size: 16px; color: #4F8BF9;'>{info_text}</div>", unsafe_allow_html=True)
-            
-            st.info(f"💡 系統資訊：共抓取到 {total_days} 天的歷史股價，這段期間共產生過 {raw_gaps} 個 {gap_type}。")
-            
-            if total_days == 0:
-                st.error(f"❌ 抓取失敗：無法解析「{ticker_input}」或查無歷史資料，請確認輸入是否正確。")
-            elif result_df.empty:
-                st.warning(f"⚠️ 查無任何 {gap_type} 資料。")
-            else:
-                if status_type == "未補":
-                    display_df = result_df[result_df['補缺狀態'] == '未補']
-                elif status_type == "已補":
-                    display_df = result_df[result_df['補缺狀態'] == '已補']
-                else:
-                    display_df = result_df
+                st.session_state.info_html = f"<div style='padding-top: 6px; font-size: 16px; color: #4F8BF9;'>個股收盤資訊 **{actual_ticker} {stock_name}** 收盤 **{last_close}** {last_date} {market_type}</div>"
+                st.session_state.sys_info = f"💡 系統資訊：共抓取到 {total_days} 天的歷史股價，這段期間共產生過 {raw_gaps} 個 {gap_type}。"
                 
-                if display_df.empty:
-                    st.warning(f"⚠️ 條件篩選結果：這段期間內沒有符合「{status_type}」狀態的 {gap_type}。")
+                if not result_df.empty:
+                    if status_type == "未補":
+                        filtered_df = result_df[result_df['補缺狀態'] == '未補'].copy()
+                    elif status_type == "已補":
+                        filtered_df = result_df[result_df['補缺狀態'] == '已補'].copy()
+                    else:
+                        filtered_df = result_df.copy()
+                        
+                    st.session_state.current_df = filtered_df
+                    del filtered_df # 釋放局部過濾後的變數
                 else:
-                    st.success(f"✅ 查詢成功！符合「{status_type}」條件的缺口共有 {len(display_df)} 筆。")
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
-                    
-                    csv = display_df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        label="📥 下載報表 (CSV 檔案)",
-                        data=csv,
-                        file_name=f"{actual_ticker}_{stock_name}_{gap_type}報表.csv",
-                        mime="text/csv",
-                    )
+                    st.session_state.current_df = pd.DataFrame()
+                
+                del result_df # 釋放核心回傳變數
+                gc.collect()
+            else:
+                st.error(f"❌ 抓取失敗：無法解析「{ticker_input}」或查無歷史資料，請確認輸入是否正確。")
+                st.session_state.current_df = None
+
+# 渲染畫面
+if st.session_state.info_html:
+    info_placeholder.markdown(st.session_state.info_html, unsafe_allow_html=True)
+
+if st.session_state.sys_info:
+    st.info(st.session_state.sys_info)
+
+if st.session_state.current_df is not None:
+    if st.session_state.current_df.empty:
+        st.warning(f"⚠️ 條件篩選結果：這段期間內沒有符合「{status_type}」狀態的 {gap_type}。")
+    else:
+        st.success(f"✅ 查詢成功！符合「{status_type}」條件的缺口共有 {len(st.session_state.current_df)} 筆。")
+        st.dataframe(st.session_state.current_df, use_container_width=True, hide_index=True)
+        
+        csv = st.session_state.current_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 下載報表 (CSV 檔案)",
+            data=csv,
+            file_name=f"{actual_ticker}_{stock_name}_{gap_type}報表.csv",
+            mime="text/csv",
+        )
