@@ -7,17 +7,14 @@ from datetime import datetime, timedelta
 import urllib.parse
 import gc
 
-# 【重要：網頁排版設定必須是所有 Streamlit 指令的第一行，以防畫面空白】
+# 【最高準則：網頁排版設定必須是全程式第一行，防白畫面】
 st.set_page_config(page_title="股票缺口查詢系統", layout="wide")
 
 # ==========================================
-# 🔑 密碼設定區 (您可以在這裡隨時修改密碼)
+# 🔑 密碼設定區
 # ==========================================
-APP_PASSWORD = "1788" 
+APP_PASSWORD = "1688" 
 
-# -------------------------
-# 密碼驗證系統
-# -------------------------
 def check_password():
     if st.session_state.get("password_correct", False):
         return True
@@ -26,32 +23,26 @@ def check_password():
     st.info("此為私人專屬的股票缺口運算伺服器，請輸入密碼以解鎖使用。")
     
     password = st.text_input("請輸入密碼：", type="password")
-    
     if password:
         if password == APP_PASSWORD:
             st.session_state["password_correct"] = True
             st.rerun() 
         else:
             st.error("❌ 密碼錯誤，請重新輸入。")
-            
     return False
 
-# -------------------------
-# 智慧代號解析 (加入 max_entries 防止快取記憶體爆掉)
-# -------------------------
-@st.cache_data(ttl=86400, max_entries=50, show_spinner=False)
+# 智慧代號解析 (輕量字串快取，保留)
+@st.cache_data(ttl=86400, max_entries=20, show_spinner=False)
 def resolve_ticker(user_input):
     user_input = str(user_input).strip()
     if user_input.isdigit():
         return user_input
-        
     try:
         encoded_input = urllib.parse.quote(user_input)
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={encoded_input}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json() 
-        
         if 'ResultSet' in data and 'Result' in data['ResultSet']:
             for item in data['ResultSet']['Result']:
                 symbol = item.get('symbol', '')
@@ -61,18 +52,15 @@ def resolve_ticker(user_input):
         pass
     return user_input
 
-# -------------------------
-# 從 API 抓取乾淨的中文名稱 
-# -------------------------
-@st.cache_data(ttl=86400, max_entries=50, show_spinner=False)
+# 抓取乾淨的中文名稱 (輕量字串快取，保留)
+@st.cache_data(ttl=86400, max_entries=20, show_spinner=False)
 def get_chinese_stock_name(ticker_symbol):
     clean_ticker = ticker_symbol.split('.')[0]
     try:
         url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/AutocompleteService;limit=5;query={clean_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
-        
         if 'ResultSet' in data and 'Result' in data['ResultSet']:
             for item in data['ResultSet']['Result']:
                 symbol = item.get('symbol', '')
@@ -82,22 +70,17 @@ def get_chinese_stock_name(ticker_symbol):
         pass
     return '未知名稱'
 
-# -------------------------
-# 核心運算邏輯 (使用純 Numpy 陣列高速運算，控管快取記憶體)
-# -------------------------
-@st.cache_data(ttl=1800, max_entries=3, show_spinner=False)
+# -------------------------------------------------------------
+# 🔥 【核心手術】完全拔除 @st.cache_data 快取！拒絕讓 Streamlit 在記憶體留存大表格
+# -------------------------------------------------------------
 def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     stock_name = get_chinese_stock_name(ticker_symbol)
     start_str = start_date.strftime('%Y-%m-%d')
     end_date_plus_1 = end_date + timedelta(days=1)
     end_str = end_date_plus_1.strftime('%Y-%m-%d')
     
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    })
-    
-    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, session=session, progress=False)
+    # 不再重複建立 Session，直接下載，交由 yfinance 內部釋放連線
+    stock_data = yf.download(ticker_symbol, start=start_str, end=end_str, auto_adjust=False, progress=False)
     
     if stock_data.empty:
         return pd.DataFrame(), 0, 0, stock_name, "", 0.0
@@ -110,6 +93,7 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
         if col not in stock_data.columns:
             return pd.DataFrame(), len(stock_data), 0, stock_name, "", 0.0
             
+    # 只提取必要數據並轉成 float32 陣列
     stock_data = stock_data[needed_cols].astype('float32')
     total_days = len(stock_data)
     
@@ -122,6 +106,7 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     last_date = date_vals[-1]
     last_close = round(float(close_vals[-1]), 2)
     
+    # 抽取完 NumPy 陣列，立斬 DataFrame
     del stock_data
     gc.collect() 
     
@@ -136,7 +121,6 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
                 target_price = float(low_vals[i-1])
                 future_highs = high_vals[i+1:]
                 fill_indices = np.where(future_highs >= target_price)[0]
-                
                 is_filled = len(fill_indices) > 0
                 fill_date = date_vals[i + 1 + fill_indices[0]] if is_filled else "-"
                 
@@ -155,7 +139,6 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
                 target_price = float(high_vals[i-1])
                 future_lows = low_vals[i+1:]
                 fill_indices = np.where(future_lows <= target_price)[0]
-                
                 is_filled = len(fill_indices) > 0
                 fill_date = date_vals[i + 1 + fill_indices[0]] if is_filled else "-"
                 
@@ -172,7 +155,6 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
                 
     raw_gaps = len(all_gaps)
     result_df = pd.DataFrame(all_gaps)
-    
     if not result_df.empty:
         result_df = result_df.sort_values(by='缺口產生日期', ascending=False).reset_index(drop=True)
     
@@ -182,12 +164,11 @@ def find_all_gaps(ticker_symbol, start_date, end_date, gap_type):
     return result_df, total_days, raw_gaps, stock_name, last_date, last_close
 
 # -------------------------
-# 網頁視覺介面 (密碼攔截)
+# 網頁視覺介面
 # -------------------------
 if not check_password():
     st.stop()
 
-# ==================== 通過密碼後才會執行以下內容 ====================
 st.title("📈 股票缺口自動篩選系統")
 st.markdown("---")
 
@@ -199,7 +180,9 @@ max_allowed_date = datetime.today()
 with col1:
     ticker_input = st.text_input("股票代號或名稱", value="", placeholder="請輸入代號或名稱...")
 with col2:
-    start_date = st.date_input("起始日期", value=datetime(1998, 3, 9), min_value=min_allowed_date, max_value=max_allowed_date)
+    # 🔥 【重點優化】將預設起始日期改為 3 年前，進一步提升速度並降低記憶體消耗。
+    default_start = datetime.today() - timedelta(days=3*365)
+    start_date = st.date_input("起始日期", value=default_start, min_value=min_allowed_date, max_value=max_allowed_date)
 with col3:
     end_date = st.date_input("結束日期", value=datetime.today(), min_value=min_allowed_date, max_value=max_allowed_date)
 with col4:
@@ -214,7 +197,6 @@ with btn_col2:
     clear_clicked = st.button("清除畫面")
 
 info_placeholder = info_col.empty()
-
 st.markdown("---")
 
 if "current_df" not in st.session_state:
@@ -280,9 +262,9 @@ if st.session_state.sys_info:
 
 if st.session_state.current_df is not None:
     if st.session_state.current_df.empty:
-        st.warning(f"⚠️ 條件篩選結果：這段期間內沒有符合「{status_type}」狀態的 {gap_type}。")
+        st.warning(f"⚠️ 條件篩選結果：這段期間內沒有符合狀態的 {gap_type}。")
     else:
-        st.success(f"✅ 查詢成功！符合「{status_type}」條件的缺口共有 {len(st.session_state.current_df)} 筆。")
+        st.success(f"✅ 查詢成功！共 {len(st.session_state.current_df)} 筆。")
         st.dataframe(st.session_state.current_df, use_container_width=True, hide_index=True)
         
         csv = st.session_state.current_df.to_csv(index=False).encode('utf-8-sig')
