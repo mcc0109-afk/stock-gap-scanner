@@ -179,13 +179,13 @@ col1, col2, col3, col4, col5 = st.columns(5)
 # 保留 1980 年為可選擇的最早日期
 min_allowed_date = datetime(1980, 1, 1)
 max_allowed_date = datetime.today()
-# 【重點更新】計算今天的 5 年前作為預設起始日期
+# 計算今天的 5 年前作為預設起始日期
 default_start_date = datetime.today() - timedelta(days=5*365)
 
 with col1:
-    ticker_input = st.text_input("股票代號或名稱", value="定穎投控")
+    # 【更新】將預設值設為空字串，並加入 placeholder 提示
+    ticker_input = st.text_input("股票代號或名稱", value="", placeholder="請輸入代號或名稱...")
 with col2:
-    # 套用 5 年前的預設日期
     start_date = st.date_input("起始日期", value=default_start_date, min_value=min_allowed_date, max_value=max_allowed_date)
 with col3:
     end_date = st.date_input("結束日期", value=datetime.today(), min_value=min_allowed_date, max_value=max_allowed_date)
